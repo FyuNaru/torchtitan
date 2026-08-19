@@ -98,10 +98,7 @@ def _collect_backward_regions(
     return regions
 
 
-def selective_activation_remat_pass(
-    gm: fx.GraphModule,
-    example_inputs: Any = None,
-) -> fx.GraphModule:
+def _selective_activation_remat(gm: fx.GraphModule) -> fx.GraphModule:
     """In-place remat: insert recompute duplicates before backward consumers.
 
     For each ``must_recompute`` forward node consumed by a backward node, a
@@ -404,4 +401,15 @@ def selective_activation_remat_pass(
     gm = raise_getitems(gm)
 
     gm.recompile()
+    return gm
+
+
+def selective_activation_remat_pass(
+    gm: fx.GraphModule,
+    example_inputs: Any = None,
+) -> fx.GraphModule:
+    """Materialize tagged recompute nodes in ``gm``."""
+    updated = _selective_activation_remat(gm)
+    if updated is not gm:
+        raise AssertionError("rematerialization must update graphs in place")
     return gm
