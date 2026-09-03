@@ -98,6 +98,7 @@ class TestConfigManager(unittest.TestCase):
 
         assert "alphabet_sort" in _supported_experiments
         assert "search_r1" in _supported_experiments
+        assert "verifiers.dapo_math" in _supported_experiments
 
     def test_cli_overrides(self):
         """CLI args override config defaults."""

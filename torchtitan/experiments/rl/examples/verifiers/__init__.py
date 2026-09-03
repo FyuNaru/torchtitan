@@ -4,8 +4,4 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-from torchtitan.experiments.rl.examples.verifiers.rollouter import (
-    VerifiersMathRollouter,
-)
-
-__all__ = ["VerifiersMathRollouter"]
+"""Reusable Verifiers adapters and task-specific TitanRL experiments."""
