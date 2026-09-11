@@ -10,7 +10,7 @@ from .apply import apply_transforms, transform_model_config_
 from .base import convert_config_type, ModelConfigTransform
 from .batch_invariance import BatchInvariantFlexConverter
 from .cast_linear import LMHeadCastConverter
-from .context_parallel import ContextParallelTransform
+from .context_parallel import ContextParallelTransform, KDAContextParallelTransform
 from .converter import ModelConfigConverter, validate_converter_order
 from .lora import LoRAConverter
 from .quantization import (
@@ -29,6 +29,7 @@ __all__ = [
     "transform_model_config_",
     "convert_config_type",
     "ContextParallelTransform",
+    "KDAContextParallelTransform",
     "BatchInvariantFlexConverter",
     "LMHeadCastConverter",
     "LoRAConverter",
