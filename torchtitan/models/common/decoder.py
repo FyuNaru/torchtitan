@@ -6,9 +6,11 @@
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import Any
 
 import torch
+from spmd_types import SpmdType
+from torch.distributed.device_mesh import DeviceMesh
 from torch.nn.attention.flex_attention import _mask_mod_signature, and_masks, BlockMask
 
 from torchtitan.config import ParallelismConfig
@@ -330,8 +332,11 @@ class Decoder(BaseModel):
 
         input_sharding = decoder_input_sharding()
         if parallel_dims.cp_enabled:
-            batch = self._cp_shard_inputs(
-                batch, input_sharding, parallel_dims, parallelism
+            batch = self._prepare_context_parallel_batch(
+                batch,
+                input_sharding,
+                parallel_dims.get_mesh("cp"),
+                parallelism,
             )
         batch = annotate_input_spmd_types(parallel_dims, batch, input_sharding)
 
@@ -339,28 +344,40 @@ class Decoder(BaseModel):
         labels = batch.pop("labels")
         return inputs, labels, batch
 
-    def _cp_shard_inputs(
+    def _prepare_context_parallel_batch(
         self,
         batch: dict[str, Any],
-        input_shardings: dict[str, Any],
-        parallel_dims: ParallelDims,
+        input_shardings: dict[str, SpmdType],
+        cp_mesh: DeviceMesh,
         parallelism: ParallelismConfig,
     ) -> dict[str, Any]:
+        from torchtitan.distributed.context_parallel.api import (
+            ContextParallelLoadBalancer,
+        )
         from torchtitan.models.common.cp_attention import CPInnerAttention
 
-        inner_attention = self.config.first_full_attention_backend
-        owner = cast(
-            "type[CPInnerAttention] | None",
-            inner_attention._owner if inner_attention is not None else None,
+        load_balancer = parallelism.context_parallel_load_balancer.build(
+            input_dict=batch,
+            input_shardings=input_shardings,
+            cp_mesh=cp_mesh,
+            ptrr_mask_key=parallelism.context_parallel_ptrr_mask_key,
         )
-        assert owner is not None and issubclass(owner, CPInnerAttention)
-        return owner.cp_shard(
-            batch,
-            input_shardings,
-            parallel_dims.get_mesh("cp"),
-            parallelism.context_parallel_load_balancer,
-            parallelism.context_parallel_ptrr_mask_key,
-        )
+        assert isinstance(load_balancer, ContextParallelLoadBalancer)
+        batch = load_balancer.shard_inputs(batch)
+
+        # Let each distinct CP backend prepare its shared attention metadata once.
+        sharded_backends: set[type[CPInnerAttention]] = set()
+        for _, module_config, _, _ in self.config.traverse(Module.Config, recurse=True):
+            owner = module_config._owner
+            if (
+                owner is None
+                or not issubclass(owner, CPInnerAttention)
+                or owner in sharded_backends
+            ):
+                continue
+            batch = owner.cp_shard_metadata(batch, load_balancer)
+            sharded_backends.add(owner)
+        return batch
 
     def get_attention_masks(
         self,
