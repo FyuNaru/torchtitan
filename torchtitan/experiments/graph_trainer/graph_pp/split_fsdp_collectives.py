@@ -91,6 +91,7 @@ def split_forward_fsdp_collectives(
     num_params: int,
     fwd_input_names: tuple[str, ...],
     fwd_flat_input_indices: tuple[int, ...],
+    extract_fsdp_param_unshard: bool = True,
 ) -> GraphPPFSDPForwardSplit:
     """Split forward FSDP all-gather chains from a forward graph.
 
@@ -116,6 +117,7 @@ def split_forward_fsdp_collectives(
             partition metadata.
         fwd_flat_input_indices (tuple[int, ...]): Flat traced input index for
             each forward graph placeholder.
+        extract_fsdp_param_unshard (bool): Whether to split the unshard graph.
 
     Returns:
         GraphPPFSDPForwardSplit: Forward split modules and calling-convention
@@ -150,6 +152,17 @@ def split_forward_fsdp_collectives(
     if invalid_indices:
         raise ValueError(
             "Forward flat input indices must be non-negative: " f"{invalid_indices}"
+        )
+    if not extract_fsdp_param_unshard:
+        return GraphPPFSDPForwardSplit(
+            unshard_module=None,
+            fw_no_fsdp_module=fw_module,
+            unshard_flat_param_indices=(),
+            unshard_output_names=(),
+            fw_no_fsdp_input_names=fwd_input_names,
+            fw_no_fsdp_flat_input_indices=fwd_flat_input_indices,
+            num_fw_param_inputs=0,
+            fw_no_fsdp_output_names=output_names(fw_module),
         )
 
     param_inputs: list[fx.Node] = []
@@ -254,6 +267,7 @@ def split_backward_fsdp_collectives(
     bw_module: fx.GraphModule,
     *,
     num_param_grads: int,
+    extract_grad_reduction: bool = True,
 ) -> GraphPPFSDPBackwardSplit:
     """Split backward FSDP/DDP/HSDP reduce-grad epilogues.
 
@@ -279,6 +293,7 @@ def split_backward_fsdp_collectives(
             partitioning.
         num_param_grads (int): Number of leading backward outputs that are
             parameter-gradient slots.
+        extract_grad_reduction (bool): Whether to split the reduction graph.
 
     Returns:
         GraphPPFSDPBackwardSplit: Backward split modules and
@@ -298,6 +313,13 @@ def split_backward_fsdp_collectives(
         raise ValueError(
             "num_param_grads cannot exceed backward output count: "
             f"{num_param_grads} > {len(all_outputs)}"
+        )
+    if not extract_grad_reduction:
+        return GraphPPFSDPBackwardSplit(
+            bw_no_fsdp_module=bw_module,
+            reduce_grad_module=None,
+            bw_no_fsdp_output_names=output_names(bw_module),
+            reduce_grad_input_names=(),
         )
     grad_outputs = all_outputs[:num_param_grads]
     remaining_outputs = all_outputs[num_param_grads:]
