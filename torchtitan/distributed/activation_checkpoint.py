@@ -236,8 +236,7 @@ class SelectiveAC(ActivationCheckpointing):
                 out_f, in_f = submod.weight.shape
                 mm_recompute_shapes.add((in_f, out_f))
 
-        # Some backends (e.g. PrivateUse1) register aten.linear as a leaf op
-        # instead of decomposing it into aten.mm, so we must handle both.
+        # Backends may expose linear or 2D matmul without decomposing to mm.
         mm_ops = (torch.ops.aten.mm.default, torch.ops.aten.linear.default)
 
         def _get_custom_policy():
@@ -256,8 +255,14 @@ class SelectiveAC(ActivationCheckpointing):
 
                 mode = "recompute" if ctx.is_recompute else "forward"
                 mm_count_key = f"{mode}_mm_count"
+                is_2d_matmul = (
+                    func == torch.ops.aten.matmul.default
+                    and args[0].ndim == 2
+                    and args[1].ndim == 2
+                )
+                is_mm = func in mm_ops or is_2d_matmul
 
-                if func in mm_ops:
+                if is_mm:
                     weight_shape = args[1].shape
                     # linear weight is (out, in); normalize to (in, out) to match mm
                     if func == torch.ops.aten.linear.default:
@@ -266,9 +271,11 @@ class SelectiveAC(ActivationCheckpointing):
                         return CheckpointPolicy.PREFER_RECOMPUTE
                     meta[mm_count_key] += 1
 
-                # Save all compute/comm ops, except every second mm/linear.
-                if func in save_ops:
-                    if func in mm_ops and meta[mm_count_key] % 2 == 0:
+                # Save all compute/comm ops, except every second 2D matmul/linear.
+                if func in save_ops or (
+                    is_2d_matmul and torch.ops.aten.mm.default in save_ops
+                ):
+                    if is_mm and meta[mm_count_key] % 2 == 0:
                         return CheckpointPolicy.PREFER_RECOMPUTE
                     return CheckpointPolicy.MUST_SAVE
                 return CheckpointPolicy.PREFER_RECOMPUTE
