@@ -414,12 +414,13 @@ class TestLossParallelCrossEntropy(DTensorTestBase):
                         label_placements,
                     )
 
-                    # pytorch loss_parallel() as ground truth. F.cross_entropy
-                    # expects the class dimension at dim 1.
+                    # Match the [B * L, V] layout used by cross_entropy_loss.
+                    # Different reduction layouts can differ in rounding, so
+                    # bitwise parity requires the same class dimension layout.
                     with loss_parallel():
                         wrapper_loss = F.cross_entropy(
-                            logits_dtensor.float().transpose(1, 2),
-                            labels_dtensor,
+                            logits_dtensor.flatten(0, 1).float(),
+                            labels_dtensor.flatten(0, 1),
                             reduction="sum",
                             ignore_index=IGNORE_INDEX,
                         )
