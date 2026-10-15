@@ -12,6 +12,7 @@ from torch.utils.flop_counter import FlopCounterMode
 from torchtitan.distributed.activation_checkpoint import FullAC, SelectiveAC
 from torchtitan.models.common.linear import Linear
 from torchtitan.protocols.module import Module, ModuleDict
+from torchtitan.tools.utils import device_module, device_type
 
 
 class ToyModule(Module):
@@ -96,28 +97,28 @@ class TestApplyAC(unittest.TestCase):
         self.assertEqual(flops_full_ac, 12.0)
 
     def test_mem(self):
-        if not torch.cuda.is_available():
-            raise unittest.SkipTest("CUDA is unavailable")
+        if not device_module.is_available():
+            raise unittest.SkipTest("An accelerator is unavailable")
 
         def get_act_mem(model_fn):
-            x = torch.randn(512, 512, requires_grad=True, device="cuda")
+            x = torch.randn(512, 512, requires_grad=True, device=device_type)
             out = model_fn(x)
             out.backward()
-            start_mem = torch.cuda.memory_stats()["requested_bytes.all.current"]
+            start_mem = device_module.memory_stats()["requested_bytes.all.current"]
 
             out = model_fn(x)
-            cur_mem = torch.cuda.memory_stats()["requested_bytes.all.current"]
+            cur_mem = device_module.memory_stats()["requested_bytes.all.current"]
             act_mem = (cur_mem - start_mem) / (1024 * 1024)  # → MB
             out.backward()
             return act_mem
 
         # 1. No AC
-        model_no_ac = ToyModule().cuda()
+        model_no_ac = ToyModule().to(device_type)
         mem_no_ac = get_act_mem(model_no_ac)
 
         # 2. SAC
         # Per-op SAC's policy is to save every other mm
-        model_selective_ac = ToyModule().cuda()
+        model_selective_ac = ToyModule().to(device_type)
         SelectiveAC.Config(
             force_recompute_mm_shapes_by_fqns=[],  # Empty list
         ).build().apply(model_selective_ac)
@@ -125,21 +126,21 @@ class TestApplyAC(unittest.TestCase):
 
         # 3. Per-op SAC with force recompute "moe.router.gate"
         # This leads to two mms being recomputed since they share the same shape!
-        model_with_force_first = ToyModule().cuda()
+        model_with_force_first = ToyModule().to(device_type)
         SelectiveAC.Config(
             force_recompute_mm_shapes_by_fqns=["moe.router.gate"],
         ).build().apply(model_with_force_first)
         mem_with_force_first = get_act_mem(model_with_force_first)
 
         # 4. Per-op SAC with force recompute "output"
-        model_with_force_last = ToyModule().cuda()
+        model_with_force_last = ToyModule().to(device_type)
         SelectiveAC.Config(
             force_recompute_mm_shapes_by_fqns=["output"],
         ).build().apply(model_with_force_last)
         mem_with_force_last = get_act_mem(model_with_force_last)
 
         # 5. Full AC
-        model_with_full_ac = ToyModule().cuda()
+        model_with_full_ac = ToyModule().to(device_type)
         FullAC.Config().build().apply(model_with_full_ac)
         mem_full_ac = get_act_mem(model_with_full_ac)
 
@@ -153,25 +154,30 @@ class TestApplyAC(unittest.TestCase):
         # the size of the other two mms.
 
     def test_correctness(self):
-        model_no_ac = ToyModule()
+        device = device_type if device_module.is_available() else "cpu"
+        model_no_ac = ToyModule().to(device)
 
-        model_selective_ac = ToyModule()
+        model_selective_ac = ToyModule().to(device)
         model_selective_ac.load_state_dict(model_no_ac.state_dict())
         SelectiveAC.Config(
             force_recompute_mm_shapes_by_fqns=[],
         ).build().apply(model_selective_ac)
 
-        model_force_first = ToyModule()
+        model_force_first = ToyModule().to(device)
         model_force_first.load_state_dict(model_no_ac.state_dict())
         SelectiveAC.Config(
             force_recompute_mm_shapes_by_fqns=["moe.router.gate"],
         ).build().apply(model_force_first)
 
-        model_force_last = ToyModule()
+        model_force_last = ToyModule().to(device)
         model_force_last.load_state_dict(model_no_ac.state_dict())
         SelectiveAC.Config(
             force_recompute_mm_shapes_by_fqns=["output"],
         ).build().apply(model_force_last)
+
+        model_full_ac = ToyModule().to(device)
+        model_full_ac.load_state_dict(model_no_ac.state_dict())
+        FullAC.Config().build().apply(model_full_ac)
 
         def run_fwd_bwd(model, batch):
             model.zero_grad(set_to_none=True)
@@ -186,21 +192,22 @@ class TestApplyAC(unittest.TestCase):
             ]
             return out.detach(), grad_in, grad_params
 
-        batch = torch.randn(64, 512)
+        batch = torch.randn(64, 512, device=device)
 
         out_ref, gin_ref, gparams_ref = run_fwd_bwd(model_no_ac, batch)
         out_sel, gin_sel, gparams_sel = run_fwd_bwd(model_selective_ac, batch)
         out_f1, gin_f1, gparams_f1 = run_fwd_bwd(model_force_first, batch)
         out_fl, gin_fl, gparams_fl = run_fwd_bwd(model_force_last, batch)
+        out_full, gin_full, gparams_full = run_fwd_bwd(model_full_ac, batch)
 
-        for other_out in (out_sel, out_f1, out_fl):
+        for other_out in (out_sel, out_f1, out_fl, out_full):
             torch.testing.assert_close(out_ref, other_out)
 
-        for other_gin in (gin_sel, gin_f1, gin_fl):
+        for other_gin in (gin_sel, gin_f1, gin_fl, gin_full):
             torch.testing.assert_close(gin_ref, other_gin)
 
-        for g_ref, g_sel, g_f1, g_fl in zip(
-            gparams_ref, gparams_sel, gparams_f1, gparams_fl
+        for g_ref, g_sel, g_f1, g_fl, g_full in zip(
+            gparams_ref, gparams_sel, gparams_f1, gparams_fl, gparams_full
         ):
             # Skip wrapper / missing grads
             if not (
@@ -208,12 +215,14 @@ class TestApplyAC(unittest.TestCase):
                 and torch.is_tensor(g_sel)
                 and torch.is_tensor(g_f1)
                 and torch.is_tensor(g_fl)
+                and torch.is_tensor(g_full)
             ):
                 continue
 
             torch.testing.assert_close(g_ref, g_sel)
             torch.testing.assert_close(g_ref, g_f1)
             torch.testing.assert_close(g_ref, g_fl)
+            torch.testing.assert_close(g_ref, g_full)
 
     def test_force_recompute_mm_fqns(self):
         """Test that force_recompute_mm_shapes_by_fqns controls
