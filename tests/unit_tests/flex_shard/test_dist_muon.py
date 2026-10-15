@@ -12,6 +12,7 @@ import torch
 from torch.distributed.device_mesh import init_device_mesh
 from torch.distributed.tensor import distribute_tensor, Shard
 from torch.testing._internal.distributed._tensor.common_dtensor import (
+    DEVICE_TYPE,
     DTensorTestBase,
     with_comms,
 )
@@ -33,7 +34,7 @@ from torchtitan.distributed.flex_shard.dist_muon import (
 )
 
 
-@unittest.skipUnless(torch.cuda.device_count() >= 2, "requires two CUDA devices")
+@unittest.skipUnless(torch.accelerator.device_count() >= 2, "requires two accelerators")
 class TestDistMuon(DTensorTestBase):
     @property
     def world_size(self):
@@ -41,7 +42,7 @@ class TestDistMuon(DTensorTestBase):
 
     @property
     def device_type(self):
-        return "cuda"
+        return DEVICE_TYPE
 
     @with_comms
     def test_matches_plain_muon_across_flat_checkpoint(self):
@@ -237,7 +238,9 @@ class TestDistMuon(DTensorTestBase):
         )
 
 
-@unittest.skipUnless(torch.cuda.device_count() >= 4, "requires four CUDA devices")
+@unittest.skipUnless(
+    torch.accelerator.device_count() >= 4, "requires four accelerators"
+)
 class TestDistMuonInitialExpertStorageContract(DTensorTestBase):
     @property
     def world_size(self):
@@ -245,7 +248,7 @@ class TestDistMuonInitialExpertStorageContract(DTensorTestBase):
 
     @property
     def device_type(self):
-        return "cuda"
+        return DEVICE_TYPE
 
     @with_comms
     def test_rejects_insufficient_expert_storage_layout(self):
