@@ -7,8 +7,10 @@
 import unittest
 from unittest.mock import patch
 
+# Initialize device extensions before SPMD, including in spawned test ranks.
+import torch  # usort: skip
+
 import spmd_types as spmd
-import torch
 import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
