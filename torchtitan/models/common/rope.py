@@ -246,6 +246,12 @@ class ComplexRoPE(RoPE):
         positions = _maybe_wrap_positions(positions, query)
         if positions is not None:
             _maybe_check_max_pos(positions, max_valid_pos=self.cache.shape[0] - 1)
+        if self.cache.device.type == "npu":
+            # NPU gather/index do not support complex caches. Index the real
+            # view instead, preserving both components and packed positions.
+            real_cache = torch.view_as_real(self.cache).flatten(-2)
+            reshaped = _reshape_for_broadcast(real_cache, query.shape, positions)
+            return torch.view_as_complex(reshaped.unflatten(-1, (-1, 2)))
         # Complex RoPE cache has width dim / 2 because each complex value
         # represents a pair of real dimensions.
         complex_query_shape = (*query.shape[:-1], query.shape[-1] // 2)
